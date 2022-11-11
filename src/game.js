@@ -44,24 +44,27 @@ function createMonsters(room, maxMonstersPerRoom){
             y = randInt(room.getTop(), room.getBottom());
 
         if(!entityAt(x, y)){
-            let type = randInt(0, 3) === 0 ? 'troll' : 'orc';
-            createEntity(type, x, y);
+            let [type, props] = randInt(0, 3) === 0
+                ? ['troll', {hp: 16, defense: 1, power: 4}]
+                : ['orc' ,  {hp: 10, defense: 0, power: 3}];
+            createEntity(type, x, y, props);
         }
     }
 }
 
 let entities = new Map();
 
-function createEntity(type, x, y){
+function createEntity(type, x, y, properties={}){
     let id = ++createEntity.id;
-    let entity = { id, type, x, y };
+    let entity = Object.create(ENTITY_PROPERTIES[type]);
+    Object.assign(entity, { id, type, x, y, ...properties });
     entities.set(id, entity);
     return entity;
 }
 createEntity.id = 0;
 
 
-let player = createEntity('player', 5, 5);
+let player = createEntity('player', 1, 5, {hp: 30, defense: 2, power: 5});
 
 
 
@@ -128,13 +131,14 @@ function computeGlyphMap(entities) {
 
 
 /** Movement **/
+
 function playerMoveBy(dx, dy){
     let newX = player.x + dx,
         newY = player.y + dy;
     if (tileMap.get(newX, newY).walkable) {
         let target = entityAt(newX, newY);
-        if(target && ENTITY_PROPERTIES[target.type].blocks){
-            print(`You kick the ${target.type} in the shins, much to its annoyance!`)
+        if(target && target.hp > 0){
+            attack(player, target)
         }
         else {
             player.x = newX;
@@ -149,6 +153,26 @@ function enemiesMove(){
         if(entity !== player){
             print(`The ${entity.type} ponders the meaning of its existence`);
         }
+    }
+}
+
+
+/** Combat **/
+
+
+function takeDamage(target, amount){
+    target.hp -= amount;
+    //TODO: handle death
+}
+
+function attack(attacker, defender){
+    let damage = attacker.power - defender.defense;
+    if(damage > 0) {
+        takeDamage(defender, damage);
+        print(`${attacker.type} attacks ${defender.type} for ${damage} hit points.`)
+    }
+    else{
+        print(`${attacker.type} attacks ${defender.type} but does no damage.`);
     }
 }
 
