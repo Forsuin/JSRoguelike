@@ -21,14 +21,23 @@ display.draw(5, 4, '@');
 /** Entities **/
 
 const ENTITY_PROPERTIES = {
-    player: {blocks: true, visuals: ['@', "hsl(60, 100%, 70%)"], },
-    troll:  {blocks: true, visuals: ['T', "hsl(120, 60%, 30%)"], },
-    orc:    {blocks: true, visuals: ['o', "hsl(100, 30%, 40%)"], },
+    player: {blocks: true,  renderOrder: 9, visuals: ['@', "hsl(60, 100%, 70%)"], },
+    troll:  {blocks: true,  renderOrder: 6, visuals: ['T', "hsl(120, 60%, 30%)"], },
+    orc:    {blocks: true,  renderOrder: 6, visuals: ['o', "hsl(100, 30%, 40%)"], },
+    corpse: {blocks: false, renderOrder: 0, visuals: ['%', "darkred"], },
 };
 
-function entityAt(x, y){
+
+const entityPrototype = {
+    get blocks() { return ENTITY_PROPERTIES[this.type].blocks; },
+    get visuals() { return ENTITY_PROPERTIES[this.type].visuals; },
+    get renderOrder() { return ENTITY_PROPERTIES[this.type].renderOrder; },
+}
+
+
+function blockingEntityAt(x, y){
     for(let entity of entities.values()){
-        if(entity.x === x && entity.y === y){
+        if(entity.blocks && entity.x === x && entity.y === y){
             return entity;
         }
     }
@@ -43,10 +52,11 @@ function createMonsters(room, maxMonstersPerRoom){
         let x = randInt(room.getLeft(), room.getRight()),
             y = randInt(room.getTop(), room.getBottom());
 
-        if(!entityAt(x, y)){
+        if(!blockingEntityAt(x, y)){
+            let ai = {behavior: 'moveToPlayer'};
             let [type, props] = randInt(0, 3) === 0
-                ? ['troll', {hp: 16, defense: 1, power: 4}]
-                : ['orc' ,  {hp: 10, defense: 0, power: 3}];
+                ? ['troll', {hp: 16, defense: 1, power: 4, ai}]
+                : ['orc' ,  {hp: 10, defense: 0, power: 3, ai}];
             createEntity(type, x, y, props);
         }
     }
@@ -56,7 +66,8 @@ let entities = new Map();
 
 function createEntity(type, x, y, properties={}){
     let id = ++createEntity.id;
-    let entity = Object.create(ENTITY_PROPERTIES[type]);
+    let entity = Object.create(entityPrototype);
+    entity.name = type;
     Object.assign(entity, { id, type, x, y, ...properties });
     entities.set(id, entity);
     return entity;
@@ -123,9 +134,11 @@ function computeLightMap(center, tileMap) {
 
 function computeGlyphMap(entities) {
     let glyphMap = createMap(); // [char, fg, optional bg]
-    for (let entity of entities.values()) {
-        glyphMap.set(entity.x, entity.y, ENTITY_PROPERTIES[entity.type].visuals);
-    }
+
+    entities = Array.from(entities.values());
+    entities.sort((a, b) => a.renderOrder - b.renderOrder);
+    entities.forEach(e => glyphMap.set(e.x, e.y, e.visuals));
+
     return glyphMap;
 }
 
@@ -136,22 +149,63 @@ function playerMoveBy(dx, dy){
     let newX = player.x + dx,
         newY = player.y + dy;
     if (tileMap.get(newX, newY).walkable) {
-        let target = entityAt(newX, newY);
-        if(target && target.hp > 0){
+        let target = blockingEntityAt(newX, newY);
+        if(target){
             attack(player, target)
         }
         else {
             player.x = newX;
             player.y = newY;
-            enemiesMove();
         }
+
+        enemiesMove();
     }
 }
 
 function enemiesMove(){
+    let lightMap = computeLightMap(player, tileMap);
+
     for(let entity of entities.values()) {
-        if(entity !== player){
-            print(`The ${entity.type} ponders the meaning of its existence`);
+        if(!entity.dead && entity.ai && entity.ai.behavior === 'moveToPlayer') {
+            if(!(lightMap.get(entity.x, entity.y) > 0.0)){
+                //Player cannot see the monster, and vice versa. The monster can't move towards the player
+                continue;
+            }
+
+            if(entity.x === player.x && entity.y === player.y){
+                throw "Invariant broken: monster and player are in the same location";
+            }
+
+            let dx = player.x - entity.x,
+                dy = player.y - entity.y;
+
+            //Pick horizontal/vertical movement randomly
+            let stepx = 0, stepy = 0;
+
+            if(randInt(1, Math.abs(dx) + Math.abs(dy)) <= Math.abs(dx)){
+                stepx = dx / Math.abs(dx);
+            }
+            else {
+                stepy = dy / Math.abs(dy);
+            }
+
+
+            let newX = entity.x + stepx, newY = entity.y + stepy;
+
+            if(tileMap.get(newX, newY).walkable){
+                let target = blockingEntityAt(newX, newY);
+                if(target && target.id === player.id){
+                    attack(entity, player);
+                }
+                else if(target){
+                    //Another monster there, can't move there
+                }
+                else {
+                    //take a step
+                    entity.x = newX;
+                    entity.y = newY;
+                }
+            }
         }
     }
 }
@@ -162,17 +216,23 @@ function enemiesMove(){
 
 function takeDamage(target, amount){
     target.hp -= amount;
-    //TODO: handle death
+    if(target.hp <= 0){
+        print(`${target.type} dies!`);
+        target.dead = true;
+        target.type = 'corpse';
+        target.name = `${target.name}'s corpse`;
+        delete target.ai;
+    }
 }
 
 function attack(attacker, defender){
     let damage = attacker.power - defender.defense;
     if(damage > 0) {
+        print(`${attacker.type} attacks ${defender.type} for ${damage} hit points.`);
         takeDamage(defender, damage);
-        print(`${attacker.type} attacks ${defender.type} for ${damage} hit points.`)
     }
     else{
-        print(`${attacker.type} attacks ${defender.type} but does no damage.`);
+        print(`${attacker.name} attacks ${defender.name} but does no damage.`);
     }
 }
 
@@ -205,7 +265,14 @@ function handleKeys(key){
 
 function handleKeyDown(event){
     let action = handleKeys(event.key);
+
+    if(player.dead){
+        print("You are dead");
+        return;
+    }
+
     if(action){
+        event.preventDefault();
         switch(action[0]){
             case 'move': {
                 let [_, dx, dy] = action;
@@ -220,7 +287,6 @@ function handleKeyDown(event){
                 throw `unhandled action ${action}`
         }
         draw();
-        event.preventDefault();
     }
 }
 
